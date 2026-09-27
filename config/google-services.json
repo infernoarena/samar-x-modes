@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "438867158562",
+    "firebase_url": "https://admin-panel-8c678-default-rtdb.firebaseio.com",
+    "project_id": "admin-panel-8c678",
+    "storage_bucket": "admin-panel-8c678.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:438867158562:android:6c4fe2e4ff8752c10d4c7b",
+        "android_client_info": {
+          "package_name": "com.xit.vipp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyApfgZNhpOLOcUPBTTThEuewUJRK-1QXMM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
