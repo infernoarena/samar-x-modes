@@ -40,7 +40,8 @@ jobs:
       - name: Build Vite app
         run: pnpm --dir artifacts/samar-x-modes-store build
         env:
-          VITE_GITHUB_PAGES: true
+         VITE_GITHUB_PAGES: true
+         PORT: 5173
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
