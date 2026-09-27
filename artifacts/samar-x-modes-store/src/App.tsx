@@ -1,6 +1,5 @@
 import { type ChangeEvent, type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { createWorker } from 'tesseract.js';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -41,7 +40,7 @@ import {
 } from 'lucide-react';
 import { Router as WouterRouter, useLocation } from 'wouter';
 import { useHashLocation } from 'wouter/use-hash-location';
-import brandMark from '@assets/IMG_20260926_200428_774_1790433403668.jpg';
+import brandMark from '@assets/IMG_20260926_200428_774_1790512485577.jpg';
 import bluePanel from '@assets/generated_images/panel-blue.jpg';
 import purplePanel from '@assets/generated_images/panel-purple.jpg';
 import cyanPanel from '@assets/generated_images/panel-cyan.jpg';
@@ -49,10 +48,8 @@ import limePanel from '@assets/generated_images/panel-lime.jpg';
 
 const queryClient = new QueryClient();
 const STORAGE_KEY = 'samar-x-modes-store-v2';
-const ADMIN_SESSION_KEY = 'samar-x-modes-admin-session-v2';
-const ADMIN_PASSWORD_CACHE_KEY = 'samar-x-modes-admin-password-cache';
+const ADMIN_SESSION_KEY = 'samar-x-modes-admin-session-tab';
 const PENDING_PAYMENT_KEY = 'samar-x-modes-pending-payment';
-const ADMIN_SESSION_TTL = 1000 * 60 * 60 * 24 * 30;
 
 type Plan = {
   id: string;
@@ -92,15 +89,6 @@ type StoreData = {
   password: string;
   products: Product[];
   settings: StoreSettings;
-};
-
-type AdminAuthData = {
-  password: string;
-};
-
-type PendingPayment = {
-  productId: string;
-  planId: string;
 };
 
 const defaultData: StoreData = {
@@ -220,10 +208,6 @@ function money(value: number) {
   return `₹${value.toLocaleString('en-IN')}`;
 }
 
-function normalizePassword(value: unknown) {
-  return typeof value === 'string' ? value.trim() : '';
-}
-
 function uid(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
@@ -246,7 +230,6 @@ function normalizeStoreData(value: unknown): StoreData | null {
   return {
     ...defaultData,
     ...parsed,
-    password: normalizePassword(parsed.password) || defaultData.password,
     settings: {
       ...defaultData.settings,
       ...parsed.settings,
@@ -257,42 +240,6 @@ function normalizeStoreData(value: unknown): StoreData | null {
           : defaultData.settings.heroImages,
     },
   };
-}
-
-function extractAmountCandidates(text: string) {
-  const normalized = text
-    .replace(/[Oo]/g, '0')
-    .replace(/[Il]/g, '1')
-    .replace(/\s+/g, ' ')
-    .replace(/,/g, '');
-  const candidates = new Set<number>();
-  const currencyPattern = /(?:₹|rs\.?|inr)\s*([0-9]{1,6}(?:\.[0-9]{1,2})?)/gi;
-  for (const match of normalized.matchAll(currencyPattern)) {
-    const amount = Number(match[1]);
-    if (Number.isFinite(amount)) candidates.add(amount);
-  }
-  const contextPattern = /(?:paid|sent|amount|total|debited|received)[^0-9]{0,18}([0-9]{1,6}(?:\.[0-9]{1,2})?)/gi;
-  for (const match of normalized.matchAll(contextPattern)) {
-    const amount = Number(match[1]);
-    if (Number.isFinite(amount)) candidates.add(amount);
-  }
-  return candidates;
-}
-
-function adminSessionIsValid() {
-  try {
-    const raw = localStorage.getItem(ADMIN_SESSION_KEY);
-    if (!raw) return false;
-    const savedAt = Number(raw);
-    return Number.isFinite(savedAt) && Date.now() - savedAt < ADMIN_SESSION_TTL;
-  } catch {
-    return false;
-  }
-}
-
-function saveAdminSession(remember: boolean) {
-  if (remember) localStorage.setItem(ADMIN_SESSION_KEY, String(Date.now()));
-  else localStorage.removeItem(ADMIN_SESSION_KEY);
 }
 
 function MediaGallery({
@@ -370,10 +317,11 @@ function Storefront({ data, onAdmin }: { data: StoreData; onAdmin: () => void })
   const [selectedPlan, setSelectedPlan] = useState<Plan | null>(null);
   const [noticeVisible, setNoticeVisible] = useState(true);
   const [orderStarted, setOrderStarted] = useState(false);
-  const [proofImage, setProofImage] = useState('');
-  const [proofFileName, setProofFileName] = useState('');
-  const [proofStatus, setProofStatus] = useState<'idle' | 'processing' | 'verified' | 'error'>('idle');
+  const [proofFile, setProofFile] = useState<File | null>(null);
+  const [proofPreview, setProofPreview] = useState('');
   const [proofError, setProofError] = useState('');
+  const proofInputRef = useRef<HTMLInputElement | null>(null);
+  const restoredPendingRef = useRef('');
 
   const products = useMemo(() => data.products.filter((product) => product.active), [data.products]);
   const heroImages = data.settings.heroImages?.length ? data.settings.heroImages : [data.settings.heroImage || bluePanel];
@@ -400,13 +348,19 @@ function Storefront({ data, onAdmin }: { data: StoreData; onAdmin: () => void })
     try {
       const pending = sessionStorage.getItem(PENDING_PAYMENT_KEY);
       if (!pending) return;
-       const { productId, planId } = JSON.parse(pending) as PendingPayment;
+      const { productId, planId } = JSON.parse(pending) as { productId: string; planId: string };
+      const pendingKey = `${productId}:${planId}`;
+      if (restoredPendingRef.current === pendingKey) return;
       const product = data.products.find((item) => item.id === productId);
       const plan = product?.plans.find((item) => item.id === planId);
       if (product && plan) {
+        restoredPendingRef.current = pendingKey;
         setActiveProduct(product);
         setSelectedPlan(plan);
         setOrderStarted(true);
+        setProofFile(null);
+        setProofPreview('');
+        setProofError('');
       }
     } catch {
       sessionStorage.removeItem(PENDING_PAYMENT_KEY);
@@ -414,12 +368,12 @@ function Storefront({ data, onAdmin }: { data: StoreData; onAdmin: () => void })
   }, [data.products]);
 
   const openProduct = (product: Product) => {
+    restoredPendingRef.current = '';
     setActiveProduct(product);
     setSelectedPlan(product.plans[0] ?? null);
     setOrderStarted(false);
-    setProofImage('');
-    setProofFileName('');
-    setProofStatus('idle');
+    setProofFile(null);
+    setProofPreview('');
     setProofError('');
   };
 
@@ -434,101 +388,79 @@ function Storefront({ data, onAdmin }: { data: StoreData; onAdmin: () => void })
     window.location.href = upiUrl;
   };
 
-  const selectPaymentProof = (event: ChangeEvent<HTMLInputElement>) => {
+  const selectProof = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0];
     event.currentTarget.value = '';
+    setProofError('');
     if (!file) return;
     if (!file.type.startsWith('image/')) {
-      setProofError('Sirf payment ka image screenshot upload karein.');
-      setProofStatus('error');
+      setProofFile(null);
+      setProofPreview('');
+      setProofError('Please choose a payment screenshot image. Other file types are not accepted.');
       return;
     }
-    if (file.size > 8 * 1024 * 1024) {
-      setProofError('Screenshot 8 MB se chhota hona chahiye.');
-      setProofStatus('error');
-      return;
-    }
+    setProofFile(file);
     const reader = new FileReader();
-    reader.onload = () => {
-      setProofImage(String(reader.result));
-      setProofFileName(file.name);
-      setProofStatus('idle');
-      setProofError('');
-    };
+    reader.onload = () => setProofPreview(String(reader.result));
     reader.onerror = () => {
-      setProofError('Screenshot read nahi ho saka. Dobara try karein.');
-      setProofStatus('error');
+      setProofFile(null);
+      setProofPreview('');
+      setProofError('This screenshot could not be previewed. Please choose it again.');
     };
     reader.readAsDataURL(file);
   };
 
-  const verifyPaymentProof = async () => {
-    if (!activeProduct || !selectedPlan || !proofImage || proofStatus === 'processing') return;
-    setProofStatus('processing');
+  const removeProof = () => {
+    setProofFile(null);
+    setProofPreview('');
     setProofError('');
-    let worker: Awaited<ReturnType<typeof createWorker>> | null = null;
-    try {
-      worker = await createWorker('eng', 1, { logger: () => undefined });
-      const result = await worker.recognize(proofImage);
-      const candidates = extractAmountCandidates(result.data.text);
-      const expectedAmount = Number(selectedPlan.price);
-      if (!Array.from(candidates).some((amount) => Math.abs(amount - expectedAmount) < 0.01)) {
-        setProofStatus('error');
-        setProofError(`Screenshot me ${money(expectedAmount)} ka paid amount nahi mila. Clear screenshot select karke dobara try karein.`);
-        return;
-      }
+  };
 
-      setProofStatus('verified');
-      sessionStorage.removeItem(PENDING_PAYMENT_KEY);
-      const message = [
-        'Payment proof verified',
-        `Panel: ${activeProduct.name}`,
-        `Plan: ${selectedPlan.label}`,
-        `Amount: ${money(expectedAmount)}`,
-        `Screenshot: ${proofFileName || 'attached in buyer chat'}`,
-        '',
-        'Please send this screenshot in the chat for final delivery.',
-      ].join('\n');
-      window.setTimeout(() => {
-        window.location.href = `https://wa.me/918360226615?text=${encodeURIComponent(message)}`;
-      }, 450);
-    } catch (error) {
-      console.error('Payment proof OCR failed', error);
-      setProofStatus('error');
-      setProofError('Screenshot verify nahi ho saka. Internet on karke clear screenshot ke saath dobara try karein.');
-    } finally {
-      await worker?.terminate();
+  const handoffToWhatsApp = async () => {
+    if (!activeProduct || !selectedPlan || !proofFile) return;
+    const message = `Payment proof for ${activeProduct.name}\nPlan: ${selectedPlan.label} (${selectedPlan.duration})\nAmount: ${money(selectedPlan.price)}\n\nThe screenshot is selected and ready to attach. Please attach it before sending. Payment has not been auto-verified.`;
+    const shareData = { title: `${data.settings.storeName} payment proof`, text: message, files: [proofFile] };
+    if (navigator.share && navigator.canShare?.({ files: [proofFile] })) {
+      try {
+        await navigator.share(shareData);
+        sessionStorage.removeItem(PENDING_PAYMENT_KEY);
+        return;
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+      }
     }
+    sessionStorage.removeItem(PENDING_PAYMENT_KEY);
+    window.location.href = `https://wa.me/918360226615?text=${encodeURIComponent(message)}`;
   };
 
   return (
     <div className={`storefront cursor-${data.settings.cursorStyle}`}>
       <div className="top-strip">24/7 ONLINE • INSTANT DELIVERY • TRUSTED SERVICE</div>
       <header className="site-header">
-        <button className="mobile-menu-button" onClick={() => setMobileMenu((value) => !value)} aria-label="Open menu">
+        <button className="mobile-menu-button" data-testid="button-mobile-menu" onClick={() => setMobileMenu((value) => !value)} aria-label="Open menu">
           {mobileMenu ? <X size={21} /> : <Menu size={21} />}
         </button>
-        <button className="brand-pill" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>
+        <button className="brand-pill" data-testid="button-brand-home" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>
           <span className="brand-mark"><img src={brandMark} alt="" /></span>
           <span>{data.settings.storeName}</span>
         </button>
         <nav className="main-nav">
-          <a href="#home"><Home size={15} /> Home</a>
-          <a href="#products"><Grid3X3 size={15} /> Products</a>
-          <a href="#how-it-works"><Zap size={15} /> How to buy</a>
+           <a data-testid="link-home" href="#home"><Home size={15} /> Home</a>
+           <a data-testid="link-products" href="#products"><Grid3X3 size={15} /> Products</a>
+           <a data-testid="link-how-to-buy" href="#how-it-works"><Zap size={15} /> How to buy</a>
         </nav>
         <div className="header-actions">
-          <a className="support-link" href={data.settings.supportUrl || '#how-it-works'} target="_blank" rel="noreferrer"><MessageCircle size={16} /> Support</a>
-          <button className="admin-link" onClick={onAdmin}><LockKeyhole size={15} /> Admin</button>
+           <a className="support-link" data-testid="link-support" href={data.settings.supportUrl || '#how-it-works'} target="_blank" rel="noreferrer"><MessageCircle size={16} /> Support</a>
+           <button className="admin-link" data-testid="button-admin-login" onClick={onAdmin}><LockKeyhole size={15} /> Admin</button>
         </div>
       </header>
 
       {mobileMenu && (
         <div className="mobile-nav">
-          <a href="#home" onClick={() => setMobileMenu(false)}>Home</a>
-          <a href="#products" onClick={() => setMobileMenu(false)}>Products</a>
-          <a href="#how-it-works" onClick={() => setMobileMenu(false)}>How to buy</a>
-          <button onClick={onAdmin}><LockKeyhole size={15} /> Admin login</button>
+           <a data-testid="mobile-link-home" href="#home" onClick={() => setMobileMenu(false)}>Home</a>
+           <a data-testid="mobile-link-products" href="#products" onClick={() => setMobileMenu(false)}>Products</a>
+           <a data-testid="mobile-link-how-to-buy" href="#how-it-works" onClick={() => setMobileMenu(false)}>How to buy</a>
+           <button data-testid="mobile-button-admin-login" onClick={onAdmin}><LockKeyhole size={15} /> Admin login</button>
         </div>
       )}
 
@@ -536,7 +468,7 @@ function Storefront({ data, onAdmin }: { data: StoreData; onAdmin: () => void })
         {noticeVisible && (
           <div className="notice-bar">
             <div><span className="notice-icon">!</span><strong>Notice</strong><span>{data.settings.announcement}</span></div>
-            <button onClick={() => setNoticeVisible(false)} aria-label="Close notice"><X size={18} /></button>
+             <button data-testid="button-dismiss-notice" onClick={() => setNoticeVisible(false)} aria-label="Close notice"><X size={18} /></button>
           </div>
         )}
 
@@ -547,7 +479,7 @@ function Storefront({ data, onAdmin }: { data: StoreData; onAdmin: () => void })
             <span className="eyebrow">SAMAR X MODES / DIGITAL STORE</span>
             <h1>{data.settings.heroTitle}</h1>
             <p>{data.settings.heroSubtitle}</p>
-            <a className="hero-button" href="#products">Explore panels <ArrowRight size={18} /></a>
+             <a className="hero-button" data-testid="link-explore-panels" href="#products">Explore panels <ArrowRight size={18} /></a>
           </div>
           <div className="hero-points">
             <span><ShieldCheck size={18} /> Trusted</span>
@@ -568,17 +500,17 @@ function Storefront({ data, onAdmin }: { data: StoreData; onAdmin: () => void })
         <section className="store-controls" id="products">
           <div className="section-heading">
             <div><span className="eyebrow green">OUR PRODUCTS</span><h2>Choose your panel</h2></div>
-            <div className="search-box"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search panel..." aria-label="Search panels" /></div>
+             <div className="search-box"><Search size={16} /><input data-testid="input-search-panels" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search panel..." aria-label="Search panels" /></div>
           </div>
           <div className="category-row">
-            {categories.map((item) => <button className={category === item ? 'active' : ''} key={item} onClick={() => setCategory(item)}>{item}{item === 'ALL' && <ChevronDown size={14} />}</button>)}
+             {categories.map((item) => <button data-testid={`button-category-${item.toLowerCase().replace(/\s+/g, '-')}`} className={category === item ? 'active' : ''} key={item} onClick={() => setCategory(item)}>{item}{item === 'ALL' && <ChevronDown size={14} />}</button>)}
           </div>
         </section>
 
         <section className="product-grid" aria-label="Panel products">
           {filteredProducts.map((product) => (
             <article className="product-card" key={product.id}>
-              <button className="product-image-button" onClick={() => openProduct(product)} aria-label={`View ${product.name}`}>
+                 <button className="product-image-button" data-testid={`button-view-product-${product.id}`} onClick={() => openProduct(product)} aria-label={`View ${product.name}`}>
                 <ProductArtwork product={product} />
                 {product.badge && <span className="product-badge">{product.badge}</span>}
                 <span className="view-overlay"><Eye size={17} /> View details</span>
@@ -588,12 +520,12 @@ function Storefront({ data, onAdmin }: { data: StoreData; onAdmin: () => void })
                 <span className="from-price">From <strong>{money(Math.min(...product.plans.map((plan) => plan.price)))}</strong></span>
               </div>
               <p className="product-description">{product.description}</p>
-              <div className="product-footer"><span>{product.plans.length} plans available</span><button onClick={() => openProduct(product)}>Buy now <ArrowRight size={15} /></button></div>
+               <div className="product-footer"><span data-testid={`text-plan-count-${product.id}`}>{product.plans.length} plans available</span><button data-testid={`button-buy-product-${product.id}`} onClick={() => openProduct(product)}>Buy now <ArrowRight size={15} /></button></div>
             </article>
           ))}
         </section>
 
-        {filteredProducts.length === 0 && <div className="empty-state"><Search size={26} /><h3>No panel found</h3><p>Try another category or search term.</p><button onClick={() => { setSearch(''); setCategory('ALL'); }}>Reset filters</button></div>}
+         {filteredProducts.length === 0 && <div className="empty-state" data-testid="empty-products"><Search size={26} /><h3>No panel found</h3><p>Try another category or search term.</p><button data-testid="button-reset-filters" onClick={() => { setSearch(''); setCategory('ALL'); }}>Reset filters</button></div>}
 
         <section className="trust-section" id="how-it-works">
           <div className="section-heading"><div><span className="eyebrow green">SIMPLE PROCESS</span><h2>How to buy</h2></div><p>Choose a plan, pay securely and send your payment proof for delivery.</p></div>
@@ -608,14 +540,14 @@ function Storefront({ data, onAdmin }: { data: StoreData; onAdmin: () => void })
       <footer className="site-footer">
         <div className="footer-brand"><div className="footer-logo"><img src={brandMark} alt="Samar X Modes" /></div><div><strong>{data.settings.storeName}</strong><p>{data.settings.tagline}</p></div></div>
         <div className="footer-links"><a href="#products">Products</a><a href="#how-it-works">How to buy</a><a href={data.settings.supportUrl || '#'} target="_blank" rel="noreferrer">Contact support</a></div>
-        <div className="footer-admin"><span>Admin access</span><button onClick={onAdmin}>Login to dashboard <LockKeyhole size={14} /></button><small>Pass is stored securely on this device after first login.</small></div>
+         <div className="footer-admin"><span>Admin access</span><button data-testid="button-footer-admin-login" onClick={onAdmin}>Login to dashboard <LockKeyhole size={14} /></button><small>Admin sessions stay isolated to each browser tab.</small></div>
         <div className="footer-bottom"><span>© 2026 {data.settings.storeName}</span><span>Made for fast digital delivery.</span></div>
       </footer>
 
       {activeProduct && (
         <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="product-modal-title">
-          <div className="product-modal">
-            <button className="close-modal" onClick={() => setActiveProduct(null)} aria-label="Close product details"><X size={20} /></button>
+           <div className="product-modal">
+             <button className="close-modal" data-testid="button-close-product-modal" onClick={() => setActiveProduct(null)} aria-label="Close product details"><X size={20} /></button>
             <div className="modal-image-wrap"><ProductArtwork product={activeProduct} className="modal-art" /></div>
             <div className="modal-content">
               <span className="eyebrow green">{activeProduct.category} / {activeProduct.badge || 'DIGITAL ACCESS'}</span>
@@ -624,37 +556,29 @@ function Storefront({ data, onAdmin }: { data: StoreData; onAdmin: () => void })
               {activeProduct.videoUrl && <a className="video-link" href={activeProduct.videoUrl} target="_blank" rel="noreferrer"><PlayCircle size={17} /> Watch setup video <ExternalLink size={13} /></a>}
               <label className="field-label">Choose duration</label>
               <div className="plan-list">
-                {activeProduct.plans.map((plan) => <button className={`plan-option ${selectedPlan?.id === plan.id ? 'selected' : ''}`} key={plan.id} onClick={() => { setSelectedPlan(plan); setOrderStarted(false); setProofImage(''); setProofFileName(''); setProofStatus('idle'); setProofError(''); }}><span><strong>{plan.label}</strong><small>Instant delivery after payment</small></span><b>{money(plan.price)}</b>{selectedPlan?.id === plan.id && <Check size={17} />}</button>)}
+                 {activeProduct.plans.map((plan) => <button className={`plan-option ${selectedPlan?.id === plan.id ? 'selected' : ''}`} data-testid={`button-plan-${plan.id}`} key={plan.id} onClick={() => setSelectedPlan(plan)}><span><strong>{plan.label}</strong><small>Instant delivery after payment</small></span><b>{money(plan.price)}</b>{selectedPlan?.id === plan.id && <Check size={17} />}</button>)}
               </div>
-               <div className="payment-box">
+              <div className="payment-box">
                 <div><span>Pay to UPI ID</span><strong>{data.settings.upiId || 'Set UPI from admin'}</strong></div>
               </div>
-              {orderStarted && <p className="payment-note"><Check size={16} /> Payment ke baad proof upload karke amount verify karein.</p>}
-              <div className="modal-actions">
-                {orderStarted
-                  ? <div className="proof-upload-area">
-                      <label className="upi-button proof-select-button">
-                        <Upload size={18} /> {proofImage ? 'Change payment proof' : 'Send payment proof'}
-                        <input type="file" accept="image/*" onChange={selectPaymentProof} />
-                      </label>
-                      {proofImage && (
-                        <div className="proof-preview">
-                          <img src={proofImage} alt="Payment proof preview" />
-                          <div>
-                            <strong>{proofFileName || 'Payment screenshot selected'}</strong>
-                            <small>Expected amount: {money(selectedPlan?.price ?? 0)}</small>
-                          </div>
-                        </div>
-                      )}
-                      {proofError && <p className="form-error">{proofError}</p>}
-                      {proofStatus === 'verified' && <p className="payment-note"><Check size={16} /> Amount match ho gaya. WhatsApp open ho raha hai…</p>}
-                      <button className="upi-button" disabled={!proofImage || proofStatus === 'processing' || proofStatus === 'verified'} onClick={verifyPaymentProof}>
-                        {proofStatus === 'processing' ? <><span className="button-spinner" /> Checking screenshot…</> : <><ShieldCheck size={18} /> Verify & send on WhatsApp</>}
-                      </button>
-                    </div>
-                  : <button className="upi-button" disabled={!selectedPlan || !data.settings.upiId} onClick={openUpi}><Smartphone size={18} /> Pay {selectedPlan ? money(selectedPlan.price) : ''} with UPI</button>}
-              </div>
-               <p className="secure-note"><ShieldCheck size={14} /> Screenshot amount match hone ke baad hi WhatsApp delivery chat khulegi.</p>
+               {orderStarted && (
+                 <div className="proof-panel" data-testid="panel-payment-proof">
+                   <div className="proof-panel-heading"><Upload size={17} /><div><strong>Payment completed?</strong><span>Select the payment screenshot from your gallery. We will not mark it as paid automatically.</span></div></div>
+                   <input ref={proofInputRef} className="proof-input" data-testid="input-payment-proof" type="file" accept="image/*" onChange={selectProof} />
+                   {proofPreview && proofFile ? (
+                     <>
+                       <div className="proof-preview" data-testid="preview-payment-proof"><img src={proofPreview} alt="Selected payment screenshot preview" /><div className="proof-preview-copy"><strong>{proofFile.name}</strong><span>Selected locally · not verified</span></div><button className="proof-remove" data-testid="button-remove-payment-proof" type="button" onClick={removeProof} aria-label="Remove selected payment screenshot"><X size={14} /></button></div>
+                       <button className="handoff-button" data-testid="button-whatsapp-handoff" type="button" onClick={handoffToWhatsApp}><MessageCircle size={17} /> Continue to WhatsApp</button>
+                       <p className="proof-disclaimer">WhatsApp may open a share sheet with this image attached. If it does not, attach this selected screenshot manually before sending. Payment approval is completed by support.</p>
+                     </>
+                   ) : (
+                     <button className="proof-select-button" data-testid="button-send-payment-proof" type="button" onClick={() => proofInputRef.current?.click()}><Upload size={16} /> Send payment proof</button>
+                   )}
+                   {proofError && <p className="proof-error" data-testid="status-payment-proof-error">{proofError}</p>}
+                 </div>
+               )}
+               {!orderStarted && <div className="modal-actions"><button className="upi-button" data-testid="button-pay-with-upi" disabled={!selectedPlan || !data.settings.upiId} onClick={openUpi}><Smartphone size={18} /> Pay {selectedPlan ? money(selectedPlan.price) : ''} with UPI</button></div>}
+               <p className="secure-note"><ShieldCheck size={14} /> UPI opens in your selected payment app. Keep the payment screenshot for the next step.</p>
             </div>
           </div>
         </div>
@@ -663,7 +587,7 @@ function Storefront({ data, onAdmin }: { data: StoreData; onAdmin: () => void })
   );
 }
 
-function AdminLogin({ password: adminPassword, onSuccess, onBack }: { password: string; onSuccess: (remember: boolean) => void; onBack: () => void }) {
+function AdminLogin({ data, onSuccess, onBack }: { data: StoreData; onSuccess: () => void; onBack: () => void }) {
   const [password, setPassword] = useState('');
   const [remember, setRemember] = useState(true);
   const [showPassword, setShowPassword] = useState(false);
@@ -671,36 +595,37 @@ function AdminLogin({ password: adminPassword, onSuccess, onBack }: { password: 
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (password.trim() !== adminPassword.trim()) {
+    if (password !== data.password) {
       setError('Wrong admin password. Please try again.');
       return;
     }
-    saveAdminSession(remember);
-    onSuccess(remember);
+     if (remember) sessionStorage.setItem(ADMIN_SESSION_KEY, 'true');
+     else sessionStorage.removeItem(ADMIN_SESSION_KEY);
+    onSuccess();
   };
 
   return (
     <div className="admin-login-page">
       <div className="admin-login-card">
-        <button className="back-store" onClick={onBack}><ArrowRight size={16} className="rotate-180" /> Back to store</button>
+         <button className="back-store" data-testid="button-back-to-store" onClick={onBack}><ArrowRight size={16} className="rotate-180" /> Back to store</button>
         <div className="admin-lock"><LockKeyhole size={28} /></div>
         <span className="eyebrow green">SAMAR X MODES / PRIVATE AREA</span>
         <h1>Admin login</h1>
         <p>Manage panels, plans, payments and storefront settings from one place.</p>
         <form onSubmit={submit}>
           <label className="field-label" htmlFor="admin-password">Admin password</label>
-          <div className="password-input"><input id="admin-password" autoFocus autoComplete="current-password" type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => { setPassword(event.target.value); setError(''); }} placeholder="Enter your password" /><button type="button" onClick={() => setShowPassword((value) => !value)} aria-label="Show password">{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button></div>
-          {error && <p className="form-error">{error}</p>}
-          <label className="remember-check"><input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} /> Remember me on this device</label>
-          <button className="primary-button full" type="submit"><LogIn size={17} /> Open dashboard</button>
+           <div className="password-input"><input id="admin-password" data-testid="input-admin-password" autoFocus autoComplete="current-password" type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => { setPassword(event.target.value); setError(''); }} placeholder="Enter your password" /><button type="button" data-testid="button-toggle-admin-password" onClick={() => setShowPassword((value) => !value)} aria-label="Show password">{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button></div>
+           {error && <p className="form-error" data-testid="status-admin-login-error">{error}</p>}
+           <label className="remember-check"><input data-testid="checkbox-admin-session" type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} /> Keep this tab signed in</label>
+           <button className="primary-button full" data-testid="button-open-dashboard" type="submit"><LogIn size={17} /> Open dashboard</button>
         </form>
-        <div className="login-pass-hint"><span>Default login pass</span><code>SAMAR X MODES007</code><small>Change it anytime from Settings.</small></div>
+         <div className="login-pass-hint" data-testid="status-admin-login-help"><span>Default login pass</span><code>SAMAR X MODES007</code><small>Sessions stay isolated per browser tab.</small></div>
       </div>
     </div>
   );
 }
 
-function AdminDashboard({ data, setData, adminPassword, onPasswordChange, onLogout, syncStatus }: { data: StoreData; setData: (next: StoreData) => void; adminPassword: string; onPasswordChange: (password: string) => void; onLogout: () => void; syncStatus: RealtimeStatus }) {
+function AdminDashboard({ data, setData, onLogout, syncStatus }: { data: StoreData; setData: (next: StoreData) => void; onLogout: () => void; syncStatus: RealtimeStatus }) {
   const [tab, setTab] = useState<'overview' | 'products' | 'settings'>('overview');
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -739,9 +664,8 @@ function AdminDashboard({ data, setData, adminPassword, onPasswordChange, onLogo
 
   const saveSettings = (event: FormEvent) => {
     event.preventDefault();
-    const password = newPassword.trim();
-    if (password) onPasswordChange(password);
-    setData({ ...data, password: password || adminPassword, settings: settingsForm });
+    const password = newPassword.trim() || data.password;
+    setData({ ...data, password, settings: settingsForm });
     setNewPassword('');
     setNotice('Store settings saved successfully.');
     window.setTimeout(() => setNotice(''), 2400);
@@ -751,23 +675,23 @@ function AdminDashboard({ data, setData, adminPassword, onPasswordChange, onLogo
 
   return (
     <div className="admin-shell">
-      <aside className="admin-sidebar">
-        <button className="admin-brand" onClick={() => setTab('overview')}><span className="brand-mark"><img src={brandMark} alt="" /></span><span>{data.settings.storeName}<small>ADMIN PANEL</small></span></button>
+       <aside className="admin-sidebar">
+         <button className="admin-brand" data-testid="button-admin-brand" onClick={() => setTab('overview')}><span className="brand-mark"><img src={brandMark} alt="" /></span><span>{data.settings.storeName}<small>ADMIN PANEL</small></span></button>
         <nav className="admin-nav">
-          <button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}><LayoutDashboard size={18} /> Overview</button>
-          <button className={tab === 'products' ? 'active' : ''} onClick={() => setTab('products')}><Package size={18} /> Manage products</button>
-          <button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}><Settings size={18} /> Store settings</button>
+           <button className={tab === 'overview' ? 'active' : ''} data-testid="button-admin-overview" onClick={() => setTab('overview')}><LayoutDashboard size={18} /> Overview</button>
+           <button className={tab === 'products' ? 'active' : ''} data-testid="button-admin-products" onClick={() => setTab('products')}><Package size={18} /> Manage products</button>
+           <button className={tab === 'settings' ? 'active' : ''} data-testid="button-admin-settings" onClick={() => setTab('settings')}><Settings size={18} /> Store settings</button>
         </nav>
-        <div className="admin-sidebar-bottom"><button onClick={() => window.open('/', '_blank')}><ExternalLink size={16} /> View live store</button><button onClick={onLogout}><LogOut size={16} /> Logout</button></div>
+         <div className="admin-sidebar-bottom"><button data-testid="button-view-live-store" onClick={() => window.open('/', '_blank')}><ExternalLink size={16} /> View live store</button><button data-testid="button-admin-logout" onClick={onLogout}><LogOut size={16} /> Logout</button></div>
       </aside>
       <main className="admin-main">
-        <header className="admin-topbar"><div><span className="eyebrow green">CONTROL CENTER</span><h1>{tab === 'overview' ? 'Overview' : tab === 'products' ? 'Manage products' : 'Store settings'}</h1></div><div className="admin-top-actions"><span className={`admin-status sync-${syncStatus}`}><span /> {syncStatus === 'connected' ? 'Live sync on' : syncStatus === 'reconnecting' || syncStatus === 'connecting' ? 'Connecting…' : 'Local mode'}</span><button onClick={onLogout} aria-label="Logout"><LogOut size={18} /></button></div></header>
-        {notice && <div className="admin-toast"><Check size={17} /> {notice}</div>}
+         <header className="admin-topbar"><div><span className="eyebrow green">CONTROL CENTER</span><h1 data-testid="text-admin-page-title">{tab === 'overview' ? 'Overview' : tab === 'products' ? 'Manage products' : 'Store settings'}</h1></div><div className="admin-top-actions"><span className={`admin-status sync-${syncStatus}`} data-testid="status-firebase-sync"><span /> {syncStatus === 'connected' ? 'Live sync on' : syncStatus === 'reconnecting' || syncStatus === 'connecting' ? 'Connecting…' : 'Local mode'}</span><button data-testid="button-topbar-logout" onClick={onLogout} aria-label="Logout"><LogOut size={18} /></button></div></header>
+         {notice && <div className="admin-toast" data-testid="status-admin-toast"><Check size={17} /> {notice}</div>}
 
         {tab === 'overview' && (
           <div className="admin-content">
-            <div className="metric-grid"><div className="metric-card"><span>Active products</span><strong>{data.products.filter((product) => product.active).length}</strong><small><Package size={14} /> Published on store</small></div><div className="metric-card"><span>Available plans</span><strong>{totalPlans}</strong><small><ReceiptIndianRupee size={14} /> Duration options</small></div><div className="metric-card"><span>UPI payment</span><strong className="metric-upi">{data.settings.upiId ? 'READY' : 'SETUP'}</strong><small><Smartphone size={14} /> Buyer checkout</small></div><div className="metric-card"><span>Store status</span><strong className="metric-live">LIVE</strong><small><BarChart3 size={14} /> Visible to buyers</small></div></div>
-            <div className="admin-grid-two"><section className="admin-panel-card"><div className="panel-card-heading"><div><span className="eyebrow green">QUICK ACTIONS</span><h2>Keep your store updated</h2></div></div><div className="quick-actions"><button onClick={() => { setTab('products'); openEditor(); }}><Plus size={18} /><span><strong>Add new panel</strong><small>Create a product and add multiple plans</small></span><ArrowRight size={16} /></button><button onClick={() => setTab('settings')}><ReceiptIndianRupee size={18} /><span><strong>Update UPI payment</strong><small>Set the ID buyers use at checkout</small></span><ArrowRight size={16} /></button><button onClick={() => setTab('settings')}><LockKeyhole size={18} /><span><strong>Change admin password</strong><small>Keep your dashboard protected</small></span><ArrowRight size={16} /></button></div></section><section className="admin-panel-card"><div className="panel-card-heading"><div><span className="eyebrow green">PAYMENT SETUP</span><h2>Current checkout details</h2></div><Smartphone size={20} /></div><div className="payment-summary"><span>UPI ID</span><strong>{data.settings.upiId || 'Not set yet'}</strong><span>Account name</span><strong>{data.settings.upiName || 'Not set yet'}</strong><span>Payment flow</span><strong className="green-text">UPI app redirect enabled</strong></div></section></div>
+             <div className="metric-grid"><div className="metric-card" data-testid="metric-active-products"><span>Active products</span><strong>{data.products.filter((product) => product.active).length}</strong><small><Package size={14} /> Published on store</small></div><div className="metric-card" data-testid="metric-available-plans"><span>Available plans</span><strong>{totalPlans}</strong><small><ReceiptIndianRupee size={14} /> Duration options</small></div><div className="metric-card" data-testid="metric-upi-status"><span>UPI payment</span><strong className="metric-upi">{data.settings.upiId ? 'READY' : 'SETUP'}</strong><small><Smartphone size={14} /> Buyer checkout</small></div><div className="metric-card" data-testid="metric-store-status"><span>Store status</span><strong className="metric-live">LIVE</strong><small><BarChart3 size={14} /> Visible to buyers</small></div></div>
+             <div className="admin-grid-two"><section className="admin-panel-card"><div className="panel-card-heading"><div><span className="eyebrow green">QUICK ACTIONS</span><h2>Keep your store updated</h2></div></div><div className="quick-actions"><button data-testid="button-quick-add-product" onClick={() => { setTab('products'); openEditor(); }}><Plus size={18} /><span><strong>Add new panel</strong><small>Create a product and add multiple plans</small></span><ArrowRight size={16} /></button><button data-testid="button-quick-upi-settings" onClick={() => setTab('settings')}><ReceiptIndianRupee size={18} /><span><strong>Update UPI payment</strong><small>Set the ID buyers use at checkout</small></span><ArrowRight size={16} /></button><button data-testid="button-quick-password-settings" onClick={() => setTab('settings')}><LockKeyhole size={18} /><span><strong>Change admin password</strong><small>Keep your dashboard protected</small></span><ArrowRight size={16} /></button></div></section><section className="admin-panel-card"><div className="panel-card-heading"><div><span className="eyebrow green">PAYMENT SETUP</span><h2>Current checkout details</h2></div><Smartphone size={20} /></div><div className="payment-summary" data-testid="summary-payment-settings"><span>UPI ID</span><strong>{data.settings.upiId || 'Not set yet'}</strong><span>Account name</span><strong>{data.settings.upiName || 'Not set yet'}</strong><span>Payment flow</span><strong className="green-text">UPI app redirect enabled</strong></div></section></div>
             <section className="admin-panel-card"><div className="panel-card-heading"><div><span className="eyebrow green">PRODUCT SNAPSHOT</span><h2>Latest products</h2></div><button className="text-button" onClick={() => setTab('products')}>View all <ArrowRight size={14} /></button></div><div className="mini-product-list">{data.products.slice(0, 5).map((product) => <div className="mini-product" key={product.id}><img src={product.image || brandMark} alt="" /><div><strong>{product.name}</strong><small>{product.category} • {product.plans.length} plans</small></div><span className={product.maintenance ? 'status maintenance' : 'status'}>{product.maintenance ? 'Maintenance' : 'Live'}</span></div>)}</div></section>
           </div>
         )}
@@ -802,26 +726,17 @@ function ProductEditor({ product, editing, onChange, onSave, onClose, onUpdatePl
   );
 }
 
-function AdminRoute({ data, setData, adminPassword, onPasswordChange, onBack, syncStatus }: { data: StoreData; setData: (next: StoreData) => void; adminPassword: string; onPasswordChange: (password: string) => void; onBack: () => void; syncStatus: RealtimeStatus }) {
-  const [authenticated, setAuthenticated] = useState(adminSessionIsValid);
-  return authenticated
-    ? <AdminDashboard data={data} setData={setData} adminPassword={adminPassword} onPasswordChange={onPasswordChange} syncStatus={syncStatus} onLogout={() => { saveAdminSession(false); setAuthenticated(false); }} />
-    : <AdminLogin password={adminPassword} onSuccess={() => setAuthenticated(true)} onBack={onBack} />;
+function AdminRoute({ data, setData, onBack, syncStatus }: { data: StoreData; setData: (next: StoreData) => void; onBack: () => void; syncStatus: RealtimeStatus }) {
+  const [authenticated, setAuthenticated] = useState(() => sessionStorage.getItem(ADMIN_SESSION_KEY) === 'true');
+  return authenticated ? <AdminDashboard data={data} setData={setData} syncStatus={syncStatus} onLogout={() => { sessionStorage.removeItem(ADMIN_SESSION_KEY); setAuthenticated(false); }} /> : <AdminLogin data={data} onSuccess={() => setAuthenticated(true)} onBack={onBack} />;
 }
 
 function App() {
   const [data, setData] = useState<StoreData>(safeLoad);
-  const [adminPassword, setAdminPassword] = useState(() => {
-    const localPassword = normalizePassword(localStorage.getItem(ADMIN_PASSWORD_CACHE_KEY));
-    return localPassword || normalizePassword(safeLoad().password) || defaultData.password;
-  });
   const [location, setLocation] = useLocation();
   const [syncStatus, setSyncStatus] = useState<RealtimeStatus>('connecting');
   const firebaseStoreRef = useRef<FirebaseRealtimeStore<StoreData> | null>(null);
-  const adminAuthStoreRef = useRef<FirebaseRealtimeStore<AdminAuthData> | null>(null);
-  const dataRef = useRef(data);
   const hasRemoteSnapshot = useRef(false);
-  const hasRemoteAuthSnapshot = useRef(false);
 
   useEffect(() => {
     const firebaseStore = new FirebaseRealtimeStore<StoreData>({
@@ -830,14 +745,12 @@ function App() {
         hasRemoteSnapshot.current = true;
         const next = normalizeStoreData(remoteData);
         if (next) {
-          dataRef.current = next;
           setData(next);
           localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
           return;
         }
 
         const initialData = normalizeStoreData(defaultData) ?? defaultData;
-        dataRef.current = initialData;
         setData(initialData);
         localStorage.setItem(STORAGE_KEY, JSON.stringify(initialData));
         void firebaseStore.save(initialData).catch(() => undefined);
@@ -856,47 +769,10 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const adminAuthStore = new FirebaseRealtimeStore<AdminAuthData>({
-      path: 'adminAuth',
-      onData: (remoteAuth) => {
-        hasRemoteAuthSnapshot.current = true;
-        const remotePassword = normalizePassword(remoteAuth?.password);
-        if (remotePassword) {
-          setAdminPassword(remotePassword);
-          localStorage.setItem(ADMIN_PASSWORD_CACHE_KEY, remotePassword);
-          return;
-        }
-        const initializeFallback = (attempt = 0) => {
-          if (!hasRemoteSnapshot.current && attempt < 20) {
-            window.setTimeout(() => initializeFallback(attempt + 1), 250);
-            return;
-          }
-          const fallbackPassword = normalizePassword(localStorage.getItem(ADMIN_PASSWORD_CACHE_KEY)) || normalizePassword(dataRef.current.password) || defaultData.password;
-          setAdminPassword(fallbackPassword);
-          void adminAuthStore.save({ password: fallbackPassword }).catch(() => undefined);
-        };
-        initializeFallback();
-      },
-      onStatus: () => undefined,
-      onError: (error) => {
-        console.warn('Firebase admin auth sync:', error.message);
-      },
-    });
-    adminAuthStoreRef.current = adminAuthStore;
-    void adminAuthStore.connect();
-    return () => {
-      adminAuthStore.close();
-      adminAuthStoreRef.current = null;
-    };
-  }, []);
-
-  useEffect(() => {
-    dataRef.current = data;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   }, [data]);
 
   const updateData = (next: StoreData) => {
-    dataRef.current = next;
     setData(next);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
     if (hasRemoteSnapshot.current) {
@@ -904,21 +780,11 @@ function App() {
     }
   };
 
-  const updateAdminPassword = (nextPassword: string) => {
-    const next = normalizePassword(nextPassword);
-    if (!next) return;
-    setAdminPassword(next);
-    localStorage.setItem(ADMIN_PASSWORD_CACHE_KEY, next);
-    if (hasRemoteAuthSnapshot.current) {
-      void adminAuthStoreRef.current?.save({ password: next }).catch(() => undefined);
-    }
-  };
-
   const isAdmin = location === '/admin';
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        {isAdmin ? <AdminRoute data={data} setData={updateData} adminPassword={adminPassword} onPasswordChange={updateAdminPassword} syncStatus={syncStatus} onBack={() => setLocation('/')} /> : <Storefront data={data} onAdmin={() => setLocation('/admin')} />}
+        {isAdmin ? <AdminRoute data={data} setData={updateData} syncStatus={syncStatus} onBack={() => setLocation('/')} /> : <Storefront data={data} onAdmin={() => setLocation('/admin')} />}
         <Toaster />
       </TooltipProvider>
     </QueryClientProvider>
