@@ -819,6 +819,7 @@ function App() {
   const [syncStatus, setSyncStatus] = useState<RealtimeStatus>('connecting');
   const firebaseStoreRef = useRef<FirebaseRealtimeStore<StoreData> | null>(null);
   const adminAuthStoreRef = useRef<FirebaseRealtimeStore<AdminAuthData> | null>(null);
+  const dataRef = useRef(data);
   const hasRemoteSnapshot = useRef(false);
   const hasRemoteAuthSnapshot = useRef(false);
 
@@ -829,12 +830,14 @@ function App() {
         hasRemoteSnapshot.current = true;
         const next = normalizeStoreData(remoteData);
         if (next) {
+          dataRef.current = next;
           setData(next);
           localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
           return;
         }
 
         const initialData = normalizeStoreData(defaultData) ?? defaultData;
+        dataRef.current = initialData;
         setData(initialData);
         localStorage.setItem(STORAGE_KEY, JSON.stringify(initialData));
         void firebaseStore.save(initialData).catch(() => undefined);
@@ -863,9 +866,16 @@ function App() {
           localStorage.setItem(ADMIN_PASSWORD_CACHE_KEY, remotePassword);
           return;
         }
-        const fallbackPassword = normalizePassword(localStorage.getItem(ADMIN_PASSWORD_CACHE_KEY)) || normalizePassword(data.password) || defaultData.password;
-        setAdminPassword(fallbackPassword);
-        void adminAuthStore.save({ password: fallbackPassword }).catch(() => undefined);
+        const initializeFallback = (attempt = 0) => {
+          if (!hasRemoteSnapshot.current && attempt < 20) {
+            window.setTimeout(() => initializeFallback(attempt + 1), 250);
+            return;
+          }
+          const fallbackPassword = normalizePassword(localStorage.getItem(ADMIN_PASSWORD_CACHE_KEY)) || normalizePassword(dataRef.current.password) || defaultData.password;
+          setAdminPassword(fallbackPassword);
+          void adminAuthStore.save({ password: fallbackPassword }).catch(() => undefined);
+        };
+        initializeFallback();
       },
       onStatus: () => undefined,
       onError: (error) => {
@@ -881,10 +891,12 @@ function App() {
   }, []);
 
   useEffect(() => {
+    dataRef.current = data;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   }, [data]);
 
   const updateData = (next: StoreData) => {
+    dataRef.current = next;
     setData(next);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
     if (hasRemoteSnapshot.current) {
