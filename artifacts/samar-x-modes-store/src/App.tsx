@@ -423,19 +423,9 @@ function Storefront({ data, onAdmin }: { data: StoreData; onAdmin: () => void })
     setProofError('');
   };
 
-  const handoffToWhatsApp = async () => {
+  const handoffToWhatsApp = () => {
     if (!activeProduct || !selectedPlan || !proofFile) return;
     const message = `Payment proof for ${activeProduct.name}\nPlan: ${selectedPlan.label} (${selectedPlan.duration})\nAmount: ${money(selectedPlan.price)}\n\nThe screenshot is selected and ready to attach. Please attach it before sending. Payment has not been auto-verified.`;
-    const shareData = { title: `${data.settings.storeName} payment proof`, text: message, files: [proofFile] };
-    if (navigator.share && navigator.canShare?.({ files: [proofFile] })) {
-      try {
-        await navigator.share(shareData);
-        sessionStorage.removeItem(PENDING_PAYMENT_KEY);
-        return;
-      } catch (error) {
-        if (error instanceof DOMException && error.name === 'AbortError') return;
-      }
-    }
     sessionStorage.removeItem(PENDING_PAYMENT_KEY);
     window.location.href = `https://wa.me/918360226615?text=${encodeURIComponent(message)}`;
   };
@@ -576,7 +566,7 @@ function Storefront({ data, onAdmin }: { data: StoreData; onAdmin: () => void })
                      <>
                        <div className="proof-preview" data-testid="preview-payment-proof"><img src={proofPreview} alt="Selected payment screenshot preview" /><div className="proof-preview-copy"><strong>{proofFile.name}</strong><span>Selected locally · not verified</span></div><button className="proof-remove" data-testid="button-remove-payment-proof" type="button" onClick={removeProof} aria-label="Remove selected payment screenshot"><X size={14} /></button></div>
                        <button className="handoff-button" data-testid="button-whatsapp-handoff" type="button" onClick={handoffToWhatsApp}><MessageCircle size={17} /> Continue to WhatsApp</button>
-                       <p className="proof-disclaimer">WhatsApp may open a share sheet with this image attached. If it does not, attach this selected screenshot manually before sending. Payment approval is completed by support.</p>
+                       <p className="proof-disclaimer">WhatsApp will open the chat for <strong>+91 83602 26615</strong>. Attach this selected screenshot in that chat before sending. Payment approval is completed by support.</p>
                      </>
                    ) : (
                      <button className="proof-select-button" data-testid="button-send-payment-proof" type="button" onClick={() => proofInputRef.current?.click()}><Upload size={16} /> Send payment proof</button>
