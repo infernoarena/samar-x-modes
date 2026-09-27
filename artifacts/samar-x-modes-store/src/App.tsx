@@ -50,6 +50,8 @@ const queryClient = new QueryClient();
 const STORAGE_KEY = 'samar-x-modes-store-v2';
 const ADMIN_SESSION_KEY = 'samar-x-modes-admin-session-tab';
 const PENDING_PAYMENT_KEY = 'samar-x-modes-pending-payment';
+const ADMIN_PASSWORD = 'samar123';
+const ADMIN_PASSWORD_MIGRATION_VERSION = 1;
 
 type Plan = {
   id: string;
@@ -87,12 +89,14 @@ type StoreSettings = {
 
 type StoreData = {
   password: string;
+  passwordMigrationVersion?: number;
   products: Product[];
   settings: StoreSettings;
 };
 
 const defaultData: StoreData = {
-  password: 'SAMAR X MODES007',
+  password: ADMIN_PASSWORD,
+  passwordMigrationVersion: ADMIN_PASSWORD_MIGRATION_VERSION,
   settings: {
     storeName: 'SAMAR X MODES',
     tagline: 'Premium digital panels. Fast delivery. Always online.',
@@ -227,9 +231,12 @@ function normalizeStoreData(value: unknown): StoreData | null {
   if (!value || typeof value !== 'object') return null;
   const parsed = value as Partial<StoreData>;
   if (!parsed.settings || !Array.isArray(parsed.products) || !parsed.password) return null;
+  const needsPasswordMigration = (parsed.passwordMigrationVersion ?? 0) < ADMIN_PASSWORD_MIGRATION_VERSION;
   return {
     ...defaultData,
     ...parsed,
+    password: needsPasswordMigration ? ADMIN_PASSWORD : parsed.password,
+    passwordMigrationVersion: ADMIN_PASSWORD_MIGRATION_VERSION,
     settings: {
       ...defaultData.settings,
       ...parsed.settings,
@@ -619,7 +626,7 @@ function AdminLogin({ data, onSuccess, onBack }: { data: StoreData; onSuccess: (
            <label className="remember-check"><input data-testid="checkbox-admin-session" type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} /> Keep this tab signed in</label>
            <button className="primary-button full" data-testid="button-open-dashboard" type="submit"><LogIn size={17} /> Open dashboard</button>
         </form>
-         <div className="login-pass-hint" data-testid="status-admin-login-help"><span>Default login pass</span><code>SAMAR X MODES007</code><small>Sessions stay isolated per browser tab.</small></div>
+          <div className="login-pass-hint" data-testid="status-admin-login-help"><span>Default login pass</span><code>{ADMIN_PASSWORD}</code><small>Sessions stay isolated per browser tab.</small></div>
       </div>
     </div>
   );
@@ -747,6 +754,10 @@ function App() {
         if (next) {
           setData(next);
           localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+          const remote = remoteData as Partial<StoreData>;
+          if (remote.password !== next.password || remote.passwordMigrationVersion !== ADMIN_PASSWORD_MIGRATION_VERSION) {
+            void firebaseStore.save(next).catch(() => undefined);
+          }
           return;
         }
 
