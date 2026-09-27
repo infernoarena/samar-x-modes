@@ -42,6 +42,7 @@ jobs:
         env:
          VITE_GITHUB_PAGES: true
          PORT: 5173
+         BASE_PATH: /samar-x-modes/
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
